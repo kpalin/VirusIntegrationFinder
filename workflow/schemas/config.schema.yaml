@@ -6,9 +6,18 @@ type: object
 
 # possible entries of the config file and which type they should be
 properties:
-  samples:
+  INSERTED_SEQUENCE_FASTA:
     type: string
+  INPUT_FASTQ:
+    type: string
+  MAX_TIP_LENGTH:
+    type: number
+  MIN_INSERT_FRACTION:
+    type: number
 
 # entries that have to be in the config file for successful validation
 required:
-  - samples
+  - INSERTED_SEQUENCE_FASTA
+  - INPUT_FASTQ
+  - MAX_TIP_LENGTH
+  - MIN_INSERT_FRACTION

@@ -7,12 +7,231 @@ report: "report/workflow.rst"
 # Allow users to fix the underlying OS via singularity.
 singularity: "docker://continuumio/miniconda3"
 
+include: "rules/common.smk"
 
 rule all:
     input:
         # The first rule should define the default target files
         # Subsequent target rules can be specified below. They should start with all_*.
+        expand( "results/unmapped_reads.{insert_name}.fasta.gz",insert_name=INSERT_NAMES),
+        expand("results/mapped_insertions.{insert_name}.bed",insert_name=INSERT_NAMES),
+        expand( "results/insert.reads.{insert_name}.masked.filtered.ava.paf.gz",insert_name=INSERT_NAMES)
 
-
-include: "rules/common.smk"
 include: "rules/other.smk"
+wildcard_constraints:
+    insert_name="("+"|".join(INSERT_NAMES)+")"
+
+
+print(INSERT_NAMES)
+rule insert_ava:
+    input: 
+        fastq=config["INPUT_FASTQ"],
+        inserts = config["INSERTED_SEQUENCE_FASTA"]
+    output:
+        insert_paf = "results/insert.reads.paf.gz"
+    threads: 20 
+    log: "results/insert.reads.paf.log"
+    shell:
+        "minimap2 -x ava-ont -t {threads} -K 1G -c '{input.inserts}' '{input.fastq}' 2>{log} |"
+        "bgzip >{output.insert_paf}"
+
+rule insert_reads_lst:
+    input: 
+        ava_paf = rules.insert_ava.output.insert_paf
+    output:
+        insert_bed = expand("results/insert.reads.{insert_name}.bed",insert_name = INSERT_NAMES)
+    params:
+        tip_length=config["MAX_TIP_LENGTH"],
+        insert_frac=config["MIN_INSERT_FRACTION"]
+    script: "scripts/make_masking_bed.py"
+
+
+rule insert_reads_fastq:
+    input: 
+        insert_bed = rules.insert_reads_lst.output.insert_bed,
+        fastq=config["INPUT_FASTQ"]
+    output:
+        insert_fastq = "results/insert.reads.{insert_name}.fastq.gz"
+    shell:
+        "seqtk  subseq '{input.fastq}' "
+        "<(cut -f1 {input.insert_bed}|sort -u)  |bgzip>{output.insert_fastq}"
+
+rule mask_inserts:
+    input:
+        insert_fastq = rules.insert_reads_fastq.output.insert_fastq,
+        insert_bed = rules.insert_reads_lst.output.insert_bed
+    output:
+        masked_fasta = "results/insert.reads.{insert_name}.masked.fasta.gz"
+    shell:
+        "seqtk seq -A -M '{input.insert_bed}' '{input.insert_fastq}' |"
+        "bgzip >'{output.masked_fasta}'"
+
+rule chop_reads:
+    input:
+        fasta="results/{read_set_name}.fasta.gz"
+    output:
+        chopped_fasta="results/{read_set_name}.chopped.fasta.gz"
+    conda: "envs/myenv.yaml"
+    log: "results/{read_set_name}.chopped.log"
+    shell:
+        "porechop -i '{input.fasta}' 2>{log} |bgzip >'{output.chopped_fasta}'"
+
+
+rule filter_reads:
+    input: "results/insert.reads.{insert_name}.masked.fasta.gz"
+    output: "results/insert.reads.{insert_name}.masked.filtered.fasta.gz"
+    script: "scripts/filter_N_fasta.py"
+
+
+rule reads_ava:
+    input:
+        masked_fasta= rules.filter_reads.output
+    output:
+        ava_paf = "results/insert.reads.{insert_name}.masked.filtered.ava.paf.gz"
+    threads: 20
+    shell:
+        "minimap2 -x ava-ont -t {threads} -K 1G -c {input.masked_fasta} {input.masked_fasta} "
+        "|bgzip >{output.ava_paf}"
+
+rule reads_ava_unchopped:
+    input:
+        masked_fasta= rules.insert_reads_fastq.output.insert_fastq
+    output:
+        ava_paf = "results/insert.reads.{insert_name}.ava.paf.gz"
+    threads: 20
+    shell:
+        "minimap2 -x ava-ont  -t {threads} -K 1G -c {input.masked_fasta} {input.masked_fasta} "
+        "|bgzip >{output.ava_paf}"
+
+
+rule genome_map:
+    input: fasta =  rules.filter_reads.output
+    output: bam =  "results/insert.reads.{insert_name}.masked.filtered.genome.bam"
+    params: reference="/mnt/cg8/reference-genomes/GRCh38_no_alt/GRCh38_no_alt.fasta" 
+    threads: 20
+    shell: 
+        "minimap2 -t {threads} -K 1G -a -x map-ont {params.reference} {input.fasta}|samtools sort -@ {threads} -O bam -o {output.bam};"
+        "samtools index {output.bam};"
+
+
+rule mapped_inserts:
+    input: rules.genome_map.output.bam
+    output: "results/mapped_insertions.{insert_name}.bed"
+    shell:
+        "samtools depth {input} |awk -v OFS=$'\t' '$3>1 {{print $1,$2,$2+1;}}'|"
+        "bedtools merge -d 1000 -i -  >{output}"
+
+
+
+
+
+rule unmapped_reads:
+    input: rules.genome_map.output.bam
+    output: "results/unmapped_reads.{insert_name}.fasta.gz"
+    shell:
+        "samtools view -h -f 0x4 {input}|samtools fasta |bgzip>{output}"
+
+
+checkpoint scatter_inserts:
+    input:
+        bed=rules.mapped_inserts.output,
+        bam=rules.genome_map.output.bam
+    output:
+        cluster_dir=directory("results/inserts/{insert_name}/")    
+    shell:
+        "mkdir -p {output.cluster_dir};"
+        "while read CHROM START STOP ; do "
+        "samtools view  {input.bam} ${{CHROM}}:${{START}}-${{STOP}}|"
+        "cut -f1|sort -u >{output.cluster_dir}/insert_${{CHROM}}_${{START}}_${{STOP}}.lst ;"
+        "done<{input.bed}"
+
+# checkpoint scatter_inserts:
+#     input: 
+#         ava_paf = rules.reads_ava_unchopped.output.ava_paf,
+#         insert_paf = rules.insert_ava.output.insert_paf
+#     output:
+#         cluster_dir=directory("results/inserts/{insert_name}/")
+#     params:
+#         SLOP=500,
+#         SLACK=75
+#     script: "scripts/graph_assembly.py"
+
+
+rule get_insert_reads:
+    input:
+        read_list = "results/inserts/{insert_name}/insert_{i}.lst",
+        fastq = rules.insert_reads_fastq.output.insert_fastq
+    output:
+        "results/inserts/{insert_name}/reads_{i}.fastq.gz"
+    shell:
+        "seqtk  subseq '{input.fastq}' {input.read_list} | bgzip>{output}"
+
+rule read_segments:
+    input:
+        fastq = rules.get_insert_reads.output,
+        insert_paf = rules.insert_ava.output.insert_paf
+    output:
+        "results/inserts/{insert_name}/segments_{i}.fasta.gz"
+    params:
+        SLOP=1000
+    script: "scripts/read_segments.py"
+
+rule consensus_insert_reads:
+    input:
+        rules.read_segments.output
+    output:
+        "results/inserts/{insert_name}/consensus_{i}.fasta.gz"
+    shell:
+        "spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -24 -c -1 -r 2 {input} |bgzip> {output}"
+
+def aggregate_input(wildcards):
+    '''
+    aggregate the file names of the random number of files
+    generated at the scatter step
+    '''
+    import os.path 
+    all_inserts = []
+    
+    for insert_name in INSERT_NAMES:
+        checkpoint_output = checkpoints.scatter_inserts.get(insert_name=insert_name,**wildcards).output[0]
+        wc_glob = glob_wildcards('results/{insert_name}/insert_{i}.lst')
+    
+        all_inserts.extend( expand(os.path.join(checkpoint_output,'consensus_{i}.fasta.gz'),
+           i=wc_glob.i,insert_name=insert_name))
+    
+    snakemake.logging.logger.info(all_inserts)
+    return all_inserts
+
+
+rule merge_inserts:
+    input:
+        aggregate_input
+    output:
+        "results/insert_consensi.fasta.gz"
+    script:
+        "scripts/all_inserts.py"
+
+rule map_insert_to_consensus:
+    input: 
+        fastq=rules.merge_inserts.output,
+        inserts = config["INSERTED_SEQUENCE_FASTA"]
+    output:
+        consensus_psl = "results/blat_insert_consensi.psl"
+    shell:
+        "blat -t=dna -q=dna '{input.fastq}' '{input.inserts}' {output.consensus_psl}"    
+
+rule mask_inserts_consensus:
+    input: 
+        fasta=rules.merge_inserts.output,
+        inserts_psl = rules.map_insert_to_consensus.output.consensus_psl
+    output:
+        insert_bed = "results/insert_consensi.insert.bed",
+        masked_fasta = "results/masked_insert_consensi.fasta.gz"
+    threads: 20 
+    log: "results/insert_consensi.insert.paf.log"
+    script: "scripts/mask_blat_sequences.py"
+        
+
+rule all_inserts:
+    input:
+        "results/masked_insert_consensi.fasta.gz"

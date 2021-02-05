@@ -1,4 +1,7 @@
 # This file should contain everything to configure the workflow on a global scale.
 # In case of sample based data, it should be complemented by a samples.tsv file that contains
 # one row per sample. It can be parsed easily via pandas.
-samples: "config/samples.tsv"
+INSERTED_SEQUENCE_FASTA: "/mnt/cgnano/projects/promethion/190612/ont_pipe_Yin/lenti_cas9_find/possible insert.txt"
+INPUT_FASTQ: "/mnt/cgnano/projects/promethion/210126/ont_pipe/Yin_COV362_CAS9/filtered/Yin_COV362_CAS9_concat_raw.fastq.gz"
+MAX_TIP_LENGTH: 50
+MIN_INSERT_FRACTION: 0.1

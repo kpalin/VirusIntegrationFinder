@@ -1,1 +1,11 @@
 # conda environments needed for the workflow should be stored here.
+tabix
+minimap2
+samtools
+seqtk
+awk
+porechop==0.2.4
+seqan
+python==3.8
+networkx 
+biopython
