@@ -24,10 +24,10 @@ with bgzf.BgzfWriter(outfile_name) as output_handle:
         n_reads_counted = 0
         for record in SeqIO.parse(gzip.open(fasta_file, "rt"), "fasta"):
             if record.id == "Consensus":
-                record.id = f"{m.group(1)}_{m.group(2)}_consensus"
+                record.id = f"{m.group(1)}_{m.group(2)}_reads{n_reads_counted}_consensus"
                 # pdb.set_trace()
                 mseq = record.seq.tomutable()
-                for i in np.nonzero(coverages < (0.51 * n_reads_counted))[0]:
+                for i in np.nonzero(coverages < min(3.5,(0.51 * n_reads_counted)))[0]:
                     mseq[int(i)] = "-"
                 record.seq = mseq.toseq()
                 record.seq = record.seq.ungap()

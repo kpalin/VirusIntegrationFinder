@@ -11,6 +11,7 @@ INSERT_NAME = snakemake.wildcards.insert_name
 OUTPUT_DIR = Path(snakemake.output.cluster_dir)
 SLACK = snakemake.params.SLACK
 SLOP = snakemake.params.SLOP
+MIN_FRAC = snakemake.params.MIN_FRAC
 
 from snakemake.logging import logger
 
@@ -44,11 +45,6 @@ inserts_columns = [
     "matches",
 ]
 inserts.columns = inserts_columns + list(inserts.columns[len(inserts_columns) :])
-Q = "15741ece-00aa-4814-bff1-6f34b5a3198b"
-Q_node = ("15741ece-00aa-4814-bff1-6f34b5a3198b",
-        "Lenti-Cas9-2A-Blast",
-        25367)
-assert Q in set(inserts.read_id), "About line 48"
 
 #%%
 UNSPECIFIED = ""
@@ -74,9 +70,9 @@ read_annot[
     list(_insert_reads - (set(filtered_inserts.read_id)))
 ] = "Shorter than insert. "
 _insert_reads = set(filtered_inserts.read_id)
-assert Q in set(filtered_inserts.read_id)
+
 # Filter matches that match less than 10% of the insert
-filtered_inserts = filtered_inserts.query("matches>(0.1*insert_length)")[
+filtered_inserts = filtered_inserts.query(f"matches>({MIN_FRAC}*insert_length)")[
     inserts_columns
 ]
 assert (
@@ -123,7 +119,7 @@ filtered_inserts_all = filtered_inserts.copy()
 filtered_inserts = filtered_inserts.loc[~filtered_inserts.read_id.isin(contained_reads)]
 #%%
 # Merging with all-vs-all alignments. Require insert _overlap_ alignment:
-assert Q in set(filtered_inserts.read_id)
+
 ava_m = pd.merge(
     ava.query("(r1!=r2)"),
     filtered_inserts,
@@ -132,7 +128,7 @@ ava_m = pd.merge(
     suffixes=("_ava", ""),
 ).query("(s1<end) & (e1>start)")
 
-assert Q in (set(ava_m.r1) | set(ava_m.r2))
+
 ava_m = pd.merge(
     ava_m, filtered_inserts, left_on="r2", right_on="read_id", suffixes=("1", "2")
 ).query("(s2<end2) & (e2>start2)")
@@ -182,12 +178,6 @@ ava_m["tip5"] = (
     .min(axis=1)
     .where(ava_m.strand_ava == "+", _tips[["s2", "l1"]].min(axis=1))
 )
-assert Q in (set(ava_m.r1) | set(ava_m.r2))
-#%%
-ava_back = ava_m.copy()
-#%%
-
-# ava_m = ava_back.copy()
 
 # Limit length of unaligned tips
 ava_m = ava_m.loc[ava_m[["tip3", "tip5"]].max(axis=1) < SLACK]
@@ -290,7 +280,7 @@ for i, C in non_unit_components.items():
     # C_inserts = inserts.loc[insert_idx.get_loc(list(C))]
 
     # C_inserts = filtered_inserts.loc[list(C)]
-    read_annot[[n for n, _, _ in C]] = "Included in a cluster"
+    read_annot[[n for n, _, _ in C]] = "Included in a cluster. "
     C_inserts = (
         pd.concat(
             [
@@ -322,7 +312,4 @@ import json
 json.dump(
     json_graph.node_link_data(G), OUTPUT_DIR.joinpath("merge_graph.json").open("wt")
 )
-logger.info(list(G.neighbors(Q_node)))
-# assert Q in contains_graph.nodes
-# assert read_annot[Q]!=UNSPECIFIED
 read_annot.to_csv(OUTPUT_DIR.joinpath("read_annotation.tsv"), sep="\t")

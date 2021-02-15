@@ -3,5 +3,7 @@
 # one row per sample. It can be parsed easily via pandas.
 INSERTED_SEQUENCE_FASTA: "/mnt/cgnano/projects/promethion/190612/ont_pipe_Yin/lenti_cas9_find/possible insert.txt"
 INPUT_FASTQ: "/mnt/cgnano/projects/promethion/210126/ont_pipe/Yin_COV362_CAS9/filtered/Yin_COV362_CAS9_concat_raw.fastq.gz"
-MAX_TIP_LENGTH: 50
+MAX_TIP_LENGTH: 75
+MIN_OVERLAP: 500
 MIN_INSERT_FRACTION: 0.1
+GENOME_REFERENCE: "/mnt/cg8/reference-genomes/GRCh38_no_alt/GRCh38_no_alt.fasta"

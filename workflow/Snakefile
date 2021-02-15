@@ -9,7 +9,12 @@ singularity: "docker://continuumio/miniconda3"
 
 include: "rules/common.smk"
 
+
 rule all:
+    input:
+        "results/insert_consensi.merged.bed"
+
+rule all_old:
     input:
         # The first rule should define the default target files
         # Subsequent target rules can be specified below. They should start with all_*.
@@ -51,7 +56,7 @@ rule insert_reads_fastq:
         insert_bed = rules.insert_reads_lst.output.insert_bed,
         fastq=config["INPUT_FASTQ"]
     output:
-        insert_fastq = "results/insert.reads.{insert_name}.fastq.gz"
+        insert_fastq = temp("results/insert.reads.{insert_name}.fastq.gz")
     shell:
         "seqtk  subseq '{input.fastq}' "
         "<(cut -f1 {input.insert_bed}|sort -u)  |bgzip>{output.insert_fastq}"
@@ -107,7 +112,7 @@ rule reads_ava_unchopped:
 rule genome_map:
     input: fasta =  rules.filter_reads.output
     output: bam =  "results/insert.reads.{insert_name}.masked.filtered.genome.bam"
-    params: reference="/mnt/cg8/reference-genomes/GRCh38_no_alt/GRCh38_no_alt.fasta" 
+    params: reference= config["GENOME_REFERENCE"] 
     threads: 20
     shell: 
         "minimap2 -t {threads} -K 1G -a -x map-ont {params.reference} {input.fasta}|samtools sort -@ {threads} -O bam -o {output.bam};"
@@ -152,8 +157,9 @@ checkpoint scatter_inserts:
     output:
         cluster_dir=directory("results/inserts/{insert_name}/")
     params:
-        SLOP=500,
-        SLACK=75
+        SLOP=config["MIN_OVERLAP"],
+        SLACK=config["MAX_TIP_LENGTH"],
+        MIN_FRAC=config["MIN_INSERT_FRACTION"]
     script: "scripts/graph_assembly.py"
 
 
@@ -171,9 +177,9 @@ rule read_segments:
         fastq = rules.get_insert_reads.output,
         insert_paf =  "results/inserts/{insert_name}/reads_insert_{i}.paf"
     output:
-        "results/inserts/{insert_name}/segments_{i}.fasta.gz"
+        temp("results/inserts/{insert_name}/segments_{i}.fasta.gz")
     params:
-        SLOP=2000
+        SLOP=4*config["MIN_OVERLAP"]
     script: "scripts/read_segments.py"
 
 rule consensus_insert_reads:
@@ -182,8 +188,8 @@ rule consensus_insert_reads:
     output:
         "results/inserts/{insert_name}/consensus_{i}.fasta.gz"
     shell:
-        "spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -4 -c -2 -r 2 {input} |bgzip> {output}"
-        #"spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -24 -c -1 -r 2 {input} |bgzip> {output}"
+        #"spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -4 -c -2 -r 2 {input} |bgzip> {output}"
+        "spoa --strand-ambiguous -l 1 -m 2 -n -4 -g  -4 -e -2 -q -24 -c -1 -r 2 {input} |bgzip> {output}"
 
 def aggregate_input(wildcards):
     '''
@@ -212,6 +218,27 @@ rule merge_inserts:
     script:
         "scripts/all_inserts.py"
 
+rule genome_map_consensi:
+    input:
+        "results/insert_consensi.fasta.gz"
+    output:
+        bam="results/insert_consensi.bam",
+        bai="results/insert_consensi.bam.bai"
+    params: reference= config["GENOME_REFERENCE"] 
+    shell:
+        "minimap2 -a -x map-ont {params.reference} {input} |samtools sort -o {output.bam};"
+        "samtools index {output.bam}"
+
+rule genome_bed_consensi:
+    input:
+        bam=rules.genome_map_consensi.output.bam
+    output:
+        "results/insert_consensi.merged.bed"
+    shell:
+        "samtools view -h -F 0x100  {input.bam} |bedtools bamtobed|"
+        "bedtools merge -i - -o distinct -c 4 -d 50 >{output}"
+
+
 rule map_insert_to_consensus:
     input: 
         fastq=rules.merge_inserts.output,
@@ -232,7 +259,3 @@ rule mask_inserts_consensus:
     log: "results/insert_consensi.insert.paf.log"
     script: "scripts/mask_blat_sequences.py"
         
-
-rule all_inserts:
-    input:
-        "results/masked_insert_consensi.fasta.gz"

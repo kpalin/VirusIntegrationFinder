@@ -10,9 +10,13 @@ properties:
     type: string
   INPUT_FASTQ:
     type: string
+  GENOME_REFERENCE:
+    type: string
   MAX_TIP_LENGTH:
     type: number
   MIN_INSERT_FRACTION:
+    type: number
+  MIN_OVERLAP:
     type: number
 
 # entries that have to be in the config file for successful validation
