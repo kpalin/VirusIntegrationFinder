@@ -225,12 +225,12 @@ G.add_edges_from(
 components = list(sorted(nx.connected_components(G), key=len, reverse=True))
 non_unit_components = {}
 for i, C in enumerate(components):
-    if len(C) > 1:
-        non_unit_components[i] = C
-        for n in C:
-            G.nodes[n]["cluster_id"] = i
-    else:
-        read_annot[next(iter(C))[0]] += "Single read component. "
+    non_unit_components[i] = C
+    for n in C:
+        G.nodes[n]["cluster_id"] = i
+
+
+        
 #%%
 # Propagate cluster id through the contained reads:
 for cluster_id, C in non_unit_components.items():
@@ -306,12 +306,15 @@ for i, C in non_unit_components.items():
     assert (
         not C_inserts.read_id.duplicated().any()
     ), f"Cluster {i} has duplicated reads: {','.join(C_inserts.read_id)}"
-    C_inserts.to_csv(
-        OUTPUT_DIR.joinpath(f"reads_insert_{i}.paf"),
-        sep="\t",
-        index=False,
-        header=False,
-    )
+    if len(C_inserts.read_id)==1:
+        read_annot[next(iter(C))[0]] += "Single read component. "
+    else:
+        C_inserts.to_csv(
+            OUTPUT_DIR.joinpath(f"reads_insert_{i}.paf"),
+            sep="\t",
+            index=False,
+            header=False,
+        )
 
 from networkx.readwrite import json_graph
 import json
