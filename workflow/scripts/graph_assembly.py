@@ -1,4 +1,5 @@
 #%%
+from builtins import KeyError
 import pandas as pd
 import networkx as nx
 import subprocess as sp
@@ -13,7 +14,6 @@ SLOP = snakemake.params.SLOP
 
 from snakemake.logging import logger
 
-print = logger.info
 if not OUTPUT_DIR.exists():
     OUTPUT_DIR.mkdir()
 
@@ -31,7 +31,7 @@ inserts = pd.read_table(
     header=None,
 )
 
-x = [
+inserts_columns = [
     "read_id",
     "length",
     "start",
@@ -43,219 +43,283 @@ x = [
     "insert_end",
     "matches",
 ]
-inserts.columns = x + list(inserts.columns[len(x) :])
+inserts.columns = inserts_columns + list(inserts.columns[len(inserts_columns) :])
+Q = "15741ece-00aa-4814-bff1-6f34b5a3198b"
+Q_node = ("15741ece-00aa-4814-bff1-6f34b5a3198b",
+        "Lenti-Cas9-2A-Blast",
+        25367)
+assert Q in set(inserts.read_id), "About line 48"
 
-all_reads = set(inserts.read_id)
-read_status = pd.Series("OK",index=list(all_reads))
-reads_remaning = all_reads.copy()
+#%%
+UNSPECIFIED = ""
+read_annot = pd.Series(UNSPECIFIED, index=inserts.read_id.drop_duplicates())
+read_annot.name = "faith"
+# Filter reads that are almost completely the inserts
 
-print("Total reads:", len(all_reads))
+_insert_reads = set(inserts.read_id)
+filtered_inserts = inserts.query(f"(end-start)< (length - 4*{SLACK})")
+assert (
+    read_annot[list(_insert_reads - (set(filtered_inserts.read_id)))] == UNSPECIFIED
+).all()
+read_annot[
+    list(_insert_reads - (set(filtered_inserts.read_id)))
+] = "Almost completely insert. "
+_insert_reads = set(filtered_inserts.read_id)
 
+filtered_inserts = inserts.query("length>insert_length")
+assert (
+    read_annot[list(_insert_reads - (set(filtered_inserts.read_id)))] == UNSPECIFIED
+).all()
+read_annot[
+    list(_insert_reads - (set(filtered_inserts.read_id)))
+] = "Shorter than insert. "
+_insert_reads = set(filtered_inserts.read_id)
+assert Q in set(filtered_inserts.read_id)
+# Filter matches that match less than 10% of the insert
+filtered_inserts = filtered_inserts.query("matches>(0.1*insert_length)")[
+    inserts_columns
+]
+assert (
+    read_annot[list(_insert_reads - (set(filtered_inserts.read_id)))] == UNSPECIFIED
+).all()
+read_annot[
+    list(_insert_reads - (set(filtered_inserts.read_id)))
+] = "Matches less than 10% of insert. "
+_insert_reads = set(filtered_inserts.read_id)
 
-# Filter reads
+# filter bad alignments
 
-idx_ins = (
-    inserts.query("matches>(0.1*insert_length)")
-    .sort_values("matches")
-    .drop_duplicates("read_id", keep="last")
-    .set_index("read_id")
+filtered_inserts["match_prop"] = filtered_inserts.matches / (
+    filtered_inserts.end - filtered_inserts.start
 )
-print("Reads with insert", inserts.read_id.nunique())
-print("Reads with insert of sensible (10%) size", idx_ins.index.nunique())
+filtered_inserts = filtered_inserts.query("match_prop>0.85")
+
+assert (
+    read_annot[list(_insert_reads - (set(filtered_inserts.read_id)))] == UNSPECIFIED
+).all()
+read_annot[
+    list(_insert_reads - (set(filtered_inserts.read_id)))
+] = "Match identity < 85%. "
+_insert_reads = set(filtered_inserts.read_id)
 
 
-insensible_reads = all_reads - set(idx_ins.index)
-reads_remaning -= insensible_reads
-read_status[list(insensible_reads)] = "ShortInsert"
-print(f"Filtered {len(insensible_reads)} reads")
-
-
-# Filtering edges:
-
-# Reads with good inserts:
-ava_f = ava.sort_values("matches").drop_duplicates(["r1", "r2"], keep="last").copy()
-ava_f = ava_f.loc[ava_f.r1.isin(idx_ins.index) & ava_f.r2.isin(idx_ins.index)]
-
-
-ava_f = ava_f.set_index("r1")
-ava_f["i1_start"] = idx_ins.loc[ava_f.index, "start"]
-ava_f["i1_end"] = idx_ins.loc[ava_f.index, "end"]
-
-ava_f = ava_f.reset_index().set_index("r2")
-ava_f["i2_start"] = idx_ins.loc[ava_f.index, "start"]
-ava_f["i2_end"] = idx_ins.loc[ava_f.index, "end"]
-ava_f = ava_f.reset_index()
-
-import numpy as np
-
-ava_f["extra1"] = np.maximum((ava_f.i1_start - ava_f.s1), 0) + np.maximum(
-    ava_f.e1 - ava_f.i1_end, 0
-)
-ava_f["extra2"] = np.maximum(ava_f.i2_start - ava_f.s2, 0) + np.maximum(
-    ava_f.e2 - ava_f.i2_end, 0
-)
-
-
-ava_dat_w_contained = ava_f.copy()
-
-print("Pairwise alignments between reads with sensible inserts", len(ava_f))
-
-
-ava_contained_a = ava_f.loc[((ava_f.s1 < SLACK) & ((ava_f.l1 - ava_f.e1) < SLACK)) & ( (ava_f.l2-ava_f.l1)>3*SLACK ) ]
-ava_contained_b = ava_f.loc[((ava_f.s2 < SLACK) & ((ava_f.l2 - ava_f.e2) < SLACK)) & ( (ava_f.l1-ava_f.l2)>3*SLACK )]
-
-
-# Graph for later assignment to proper clusters of reads
-contained_graph = nx.DiGraph()
-contained_graph.add_edges_from((x.r1, x.r2) for _, x in ava_contained_a.iterrows())
-contained_graph.add_edges_from((x.r2, x.r1) for _, x in ava_contained_b.iterrows())
-
-contained = set(ava_contained_a.r1)
-contained.update(set(ava_contained_b.r2))
-
-ava_contained = pd.concat([ava_contained_a, ava_contained_b])
-
-reads_remaning -= contained
-read_status[list(contained)] = "PreliminaryContained"
-print("contained", len(contained))
-ava_f = ava_f.loc[~(ava_f.r1.isin(contained) | ava_f.r2.isin(contained))]
-
-
-print("Reads contained in some other", len(contained))
-print(
-    "Pairwise alignments between reads with sensible inserts and not fully contained",
-    len(ava_f),
+filtered_inserts = filtered_inserts.sort_values("matches").drop_duplicates(
+    "read_id", keep="last"
 )
 
-read_end_overlap_idx = ((ava_f.s1 < SLACK) | ((ava_f.l1 - ava_f.e1) < SLACK)) & (
-    (ava_f.s2 < SLACK) | ((ava_f.l2 - ava_f.e2) < SLACK)
-)
-ava_f = ava_f.loc[read_end_overlap_idx]
-print(
-    "Pairwise alignments between read ends with sensible inserts and not fully contained",
-    len(ava_f),
-)
 
-reads_with_edge_overlap = set(ava_f.r1) | set(ava_f.r2)
-reads_without_edge_overlap = reads_remaning - reads_with_edge_overlap
-print("Reads without edge overlap", len(reads_without_edge_overlap))
-reads_remaning -= reads_without_edge_overlap
+cr1 = ava.query(f"(r1!=r2) &(l1<(e1-s1+ 2*{SLACK}) )")
+cr2 = ava.query(f"(r1!=r2) &(l2<(e2-s2+ 2*{SLACK}) )")
+contained_reads = set(cr1.r1)
+contained_reads |= set(cr2.r2)
 
-read_status[list(reads_without_edge_overlap)] = "NoEdgeOverlap"
-print("Remaining reads", len(reads_remaning))
 
-ava_dat = ava_f.copy()
+# r1 is contained in r2  :   edge r2->r1
+contains_graph = nx.DiGraph()
+contains_graph.add_edges_from((x.r2, x.r1) for _, x in cr1.iterrows())
+contains_graph.add_edges_from((x.r1, x.r2) for _, x in cr2.iterrows())
 
-## Main filter for alignments:  Need at least SLOP bases aligned on one side of the insert
-ava_f = ava_f.loc[
-    ((ava_f.s1 < ava_f.i1_start - SLOP) | (ava_f.e1 > ava_f.i1_end + SLOP))
-    & ((ava_f.s2 < ava_f.i2_start - SLOP) | (ava_f.e2 > ava_f.i2_end + SLOP))
+filtered_inserts_all = filtered_inserts.copy()
+filtered_inserts = filtered_inserts.loc[~filtered_inserts.read_id.isin(contained_reads)]
+#%%
+# Merging with all-vs-all alignments. Require insert _overlap_ alignment:
+assert Q in set(filtered_inserts.read_id)
+ava_m = pd.merge(
+    ava.query("(r1!=r2)"),
+    filtered_inserts,
+    left_on="r1",
+    right_on="read_id",
+    suffixes=("_ava", ""),
+).query("(s1<end) & (e1>start)")
+
+assert Q in (set(ava_m.r1) | set(ava_m.r2))
+ava_m = pd.merge(
+    ava_m, filtered_inserts, left_on="r2", right_on="read_id", suffixes=("1", "2")
+).query("(s2<end2) & (e2>start2)")
+
+# Require that insert is in the same strand as the a-v-a alignment
+
+ava_m = ava_m.loc[
+    ava_m.strand_ava
+    == (ava_m.strand1 == ava_m.strand2).replace({True: "+", False: "-"})
 ]
 
 
-reads_with_covered_insert = set(ava_f.r1) | set(ava_f.r2)
-reads_with_insufficient_insert_cover = reads_remaning - reads_with_covered_insert
-
-read_status[list(reads_with_insufficient_insert_cover)] = "NoAlignmentMoreThanInsert"
-
-print(
-    "Reads with insufficent post insert extension",
-    len(reads_with_insufficient_insert_cover),
+# Lift over read2 insert locations to read1
+ava_m["r1_start2"] = pd.Series((ava_m.s1 - ava_m.s2) + ava_m.start2).where(
+    ava_m.strand_ava == "+", (ava_m.e1 - (ava_m.end2 - ava_m.s2))
 )
-reads_remaning -= reads_with_insufficient_insert_cover
-
-print(
-    "Pairwise alignments overlapping insert by",
-    SLOP,
-    ",between reads with sensible inserts",
-    len(ava_f),
+ava_m["r1_end2"] = pd.Series((ava_m.s1 - ava_m.s2) + ava_m.end2).where(
+    ava_m.strand_ava == "+", (ava_m.e1 - (ava_m.start2 - ava_m.s2))
 )
 
+# Require overlap in lifted over coordinates also.
+ava_m = ava_m.loc[(ava_m.start1 < ava_m.r1_end2) & (ava_m.end1 > ava_m.r1_start2)]
+ava_m["insert_overlap_bp"] = ava_m[["end1", "r1_end2"]].min(axis=1) - ava_m[
+    ["start1", "r1_start2"]
+].max(axis=1)
 
-# %%
+
+# Extra space in alignment before and after the insert
+extra_pre = ava_m.start1 - ava_m.s1
+extra_post = ava_m.e1 - ava_m.end1
+ava_m["extra_5p"] = extra_pre.where(ava_m.strand1 == "+", extra_post)
+ava_m["extra_3p"] = extra_post.where(ava_m.strand1 == "+", extra_pre)
+
+
+# Length of unaligned tips
+_tips = ava_m[["strand_ava", "s1", "s2"]], (
+    ava_m[["l1", "l2"]] - ava_m[["e1", "e2"]].values
+)
+_tips = pd.concat(_tips, axis=1)
+ava_m["tip3"] = (
+    _tips[["s1", "s2"]]
+    .min(axis=1)
+    .where(ava_m.strand_ava == "+", _tips[["s1", "l2"]].min(axis=1))
+)
+ava_m["tip5"] = (
+    _tips[["l1", "l2"]]
+    .min(axis=1)
+    .where(ava_m.strand_ava == "+", _tips[["s2", "l1"]].min(axis=1))
+)
+assert Q in (set(ava_m.r1) | set(ava_m.r2))
+#%%
+ava_back = ava_m.copy()
+#%%
+
+# ava_m = ava_back.copy()
+
+# Limit length of unaligned tips
+ava_m = ava_m.loc[ava_m[["tip3", "tip5"]].max(axis=1) < SLACK]
+
+
+# Require significant overlap of the insert
+ava_m = ava_m.loc[ava_m.insert_overlap_bp > SLOP]
+
+# Require sigificant overlap of the non-insert
+ava_m = ava_m.loc[ava_m[["extra_3p", "extra_5p"]].max(axis=1) > SLOP]
+
+# Maybe something..
+_n_pre = len(ava_m)
+ava_m = ava_m.loc[ava_m.matches_ava >= SLOP + 1.1 * ava_m.insert_overlap_bp]
+
+logger.info("Filtered: {}".format(_n_pre - len(ava_m)))
+#%%
+
 
 G = nx.Graph()
-
+G.add_nodes_from(
+    ((x.read_id, x.insert, x.start), x.to_dict())
+    for _, x in filtered_inserts.iterrows()
+)
 G.add_edges_from(
     (
-        x.r1,
-        x.r2,
-        {
-            "color": "red",
-            "weight": (x.matches / max(x.e1 - x.s1, x.e2 - x.s2) - 0.5) * 3,
-        },
+        (x.r1, x.insert1, x.start1),
+        (x.r2, x.insert2, x.start2),
+        dict(color="red", weight=1, **x),
     )
-    # (x.r1,x.r2)
-    for _, x in ava_f.drop_duplicates(["r1", "r2"]).iterrows()
+    for _, x in ava_m.iterrows()
     if x.r1 != x.r2
 )
 
-components = list(nx.connected_components(G))
-
-print("Reads remaining", G.number_of_nodes())
-print("Inserts observed", len(components))
-#%%
-
-
-# Assigning cluster identities:
-cluster_names = {}
+components = list(sorted(nx.connected_components(G), key=len, reverse=True))
+non_unit_components = {}
 for i, C in enumerate(components):
-    cluster_names.update({x: i for x in C})
-    for x in C:
-        G.nodes[x]["cluster"] = i
-cluster_names = pd.Series(cluster_names)
-
-
-#%%
-
-for n in contained_graph.nodes:
-    try:
-        contained_graph.nodes[n]["cluster"] = G.nodes[n]["cluster"]
-    except KeyError:
-        pass
-
-for source_node in contained_graph.nodes:
-    if "cluster" in contained_graph.nodes[source_node]:
-        continue
-    this_cluster = None
-    for t_node in nx.dfs_postorder_nodes(contained_graph, source=source_node):
-        t_cluster = contained_graph.nodes[t_node].get("cluster", -1)
-        if this_cluster is None and t_cluster != -1:
-            # If we found first node with known cluster status
-            this_cluster = t_cluster
-        elif this_cluster is not None:  # If we know which cluster we are in
-            if t_cluster == -1:
-                contained_graph.nodes[t_node]["cluster"] = this_cluster
-            elif (
-                t_cluster != this_cluster
-            ):  # If we found conflicting cluster. Cant proceed
-                break
-
-
-found_cluster = set()
-ambiguous_cluster = set()
-
-contained_G = G.copy()
-
-for r in contained:
-    if contained_graph.nodes[r].get("cluster", -1) != -1:
-        found_cluster.add(r)
-        read_status[r] = "RecoveredContained"
-        contained_G.add_edges_from(
-            (r, n, {"weight": 1, "color": "green"})
-            for n in contained_graph.neighbors(r)
-        )
+    if len(C) > 1:
+        non_unit_components[i] = C
+        for n in C:
+            G.nodes[n]["cluster_id"] = i
     else:
-        ambiguous_cluster.add(r)
-        read_status[r] = "AmbiguousContained"
+        read_annot[next(iter(C))[0]] += "Single read component. "
+#%%
+# Propagate cluster id through the contained reads:
+for cluster_id, C in non_unit_components.items():
+    for n in C:
+        read_id = n[0]
+        if read_id in contains_graph.nodes:
+            # logger.info(f"Read {read_id} in contains_graph.")
+            contains_graph.nodes[read_id].setdefault("cluster_id", set()).add(
+                cluster_id
+            )
+            for contained_read in nx.dfs_preorder_nodes(contains_graph, read_id):
+                contains_graph.nodes[contained_read].setdefault(
+                    "cluster_id", set()
+                ).add(cluster_id)
+                # logger.info(f"Added cluster {cluster_id} for {contained_read}")
 
-print(
-    f"Found clusters for {len(found_cluster)} edges. Ambiguous {len(ambiguous_cluster)}."
+
+cluster_includes = {}
+for n in contains_graph.nodes:
+    cluster_ids = contains_graph.nodes[n].get("cluster_id", set())
+    # logger.info(f"contains_graph {n}  {cluster_ids}")
+
+    if len(cluster_ids) == 1:
+        cluster_id = next(iter(cluster_ids))
+        cluster_includes.setdefault(cluster_id, set()).add(n)
+        if contains_graph.in_degree(n) >0:
+            read_annot[n] += "Contained in a read in a cluster. "
+    elif len(cluster_ids) == 0:
+        if contains_graph.in_degree(n) >0:
+            read_annot[n] += "Contained in a dangling/unclustered read. "
+    else:
+        if contains_graph.in_degree(n) >0:
+            read_annot[n] += "Contained in many clusters. "
+    # if len(cluster_ids)==0:
+    #    print(n,"MISSING")
+    # elif len(cluster_ids)>1:
+    #    print(n,",".join(map(str,cluster_ids)))
+#%%
+all_nodes = set(inserts.set_index(["read_id", "insert", "start"]).index)
+
+import functools
+
+missing_nodes = all_nodes - functools.reduce(
+    lambda x, y: x | y, non_unit_components.values(), set()
+)
+OUTPUT_DIR.joinpath("excluded.lst").open("wt").write(
+    "\n".join("\t".join(map(str, x)) for x in missing_nodes)
 )
 
+filtered_inserts.index = filtered_inserts.set_index(
+    ["read_id", "insert", "start"]
+).index
 
-missing_nodes = set(inserts.read_id) - set(contained_G.nodes)
+for i, C in non_unit_components.items():
+    # OUTPUT_DIR.joinpath(f"reads_cluster_{i}.lst").open("wt").write("\n".join(C))
 
-OUTPUT_DIR.joinpath("excluded.lst").open("wt").write("\n".join(missing_nodes))
-for i, C in enumerate(nx.connected_components(contained_G)):
-    OUTPUT_DIR.joinpath(f"insert_{i}.lst").open("wt").write("\n".join(C))
+    # C_inserts = inserts.loc[insert_idx.get_loc(list(C))]
+
+    # C_inserts = filtered_inserts.loc[list(C)]
+    read_annot[[n for n, _, _ in C]] = "Included in a cluster"
+    C_inserts = (
+        pd.concat(
+            [
+                filtered_inserts.loc[list(C)],
+                filtered_inserts_all.loc[
+                    filtered_inserts_all.read_id.isin(cluster_includes.get(i, set()))
+                ],
+            ]
+        )
+        .sort_values("matches", ascending=False)
+        .drop_duplicates("read_id")
+    )
+    assert (
+        not C_inserts.read_id.duplicated().any()
+    ), f"Cluster {i} has duplicated reads: {','.join(C_inserts.read_id)}"
+    C_inserts.to_csv(
+        OUTPUT_DIR.joinpath(f"reads_insert_{i}.paf"),
+        sep="\t",
+        index=False,
+        header=False,
+    )
+
+from networkx.readwrite import json_graph
+import json
+
+json.dump(
+    json_graph.node_link_data(G), OUTPUT_DIR.joinpath("merge_graph.json").open("wt")
+)
+logger.info(list(G.neighbors(Q_node)))
+# assert Q in contains_graph.nodes
+# assert read_annot[Q]!=UNSPECIFIED
+read_annot.to_csv(OUTPUT_DIR.joinpath("read_annotation.tsv"), sep="\t")

@@ -1,3 +1,4 @@
+from builtins import KeyError
 from Bio import SearchIO,SeqIO,bgzf
 import gzip
 
@@ -13,16 +14,19 @@ qresult = SearchIO.read(input_psl, "blat-psl")
 
 with bgzf.BgzfWriter(output_fasta) as output_handle, open(output_bed,"wt") as output_bed_handle:
     for record in SeqIO.parse(gzip.open(input_fasta, "rt"), "fasta"):
-        qr =qresult[record.id]
-        best_hit = sorted(qr.hsps,key=lambda x:-x.match_num)[0]
-        seq_id,start,end = qr.id,best_hit.hit_start,best_hit.hit_end
-        print(seq_id,start,end,sep="\t",file=output_bed_handle)
+        try:
+            qr =qresult[record.id]
+            best_hit = sorted(qr.hsps,key=lambda x:-x.match_num)[0]
+            seq_id,start,end = qr.id,best_hit.hit_start,best_hit.hit_end
+            print(seq_id,start,end,len(record),sep="\t",file=output_bed_handle)
 
 
-        s = record.seq.tomutable()
-        s[start:end]="N"*(end-start)
-        record.seq = s
-        SeqIO.write(record, handle=output_handle, format="fasta")
+            s = record.seq.tomutable()
+            s[start:end]="N"*(end-start)
+            record.seq = s
+            SeqIO.write(record, handle=output_handle, format="fasta")
+        except KeyError:
+            pass
 #%%
 # from Bio import SearchIO 
 # psl="output.psl"

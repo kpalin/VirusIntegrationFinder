@@ -132,48 +132,48 @@ rule unmapped_reads:
         "samtools view -h -f 0x4 {input}|samtools fasta |bgzip>{output}"
 
 
-checkpoint scatter_inserts:
-    input:
-        bed=rules.mapped_inserts.output,
-        bam=rules.genome_map.output.bam
-    output:
-        cluster_dir=directory("results/inserts/{insert_name}/")    
-    shell:
-        "mkdir -p {output.cluster_dir};"
-        "while read CHROM START STOP ; do "
-        "samtools view  {input.bam} ${{CHROM}}:${{START}}-${{STOP}}|"
-        "cut -f1|sort -u >{output.cluster_dir}/insert_${{CHROM}}_${{START}}_${{STOP}}.lst ;"
-        "done<{input.bed}"
-
 # checkpoint scatter_inserts:
-#     input: 
-#         ava_paf = rules.reads_ava_unchopped.output.ava_paf,
-#         insert_paf = rules.insert_ava.output.insert_paf
+#     input:
+#         bed=rules.mapped_inserts.output,
+#         bam=rules.genome_map.output.bam
 #     output:
-#         cluster_dir=directory("results/inserts/{insert_name}/")
-#     params:
-#         SLOP=500,
-#         SLACK=75
-#     script: "scripts/graph_assembly.py"
+#         cluster_dir=directory("results/inserts/{insert_name}/")    
+#     shell:
+#         "mkdir -p {output.cluster_dir};"
+#         "while read CHROM START STOP ; do "
+#         "samtools view  {input.bam} ${{CHROM}}:${{START}}-${{STOP}}|"
+#         "cut -f1|sort -u >{output.cluster_dir}/insert_${{CHROM}}_${{START}}_${{STOP}}.lst ;"
+#         "done<{input.bed}"
+
+checkpoint scatter_inserts:
+    input: 
+        ava_paf = rules.reads_ava_unchopped.output.ava_paf,
+        insert_paf = rules.insert_ava.output.insert_paf
+    output:
+        cluster_dir=directory("results/inserts/{insert_name}/")
+    params:
+        SLOP=500,
+        SLACK=75
+    script: "scripts/graph_assembly.py"
 
 
 rule get_insert_reads:
     input:
-        read_list = "results/inserts/{insert_name}/insert_{i}.lst",
+        read_list = "results/inserts/{insert_name}/reads_insert_{i}.paf",
         fastq = rules.insert_reads_fastq.output.insert_fastq
     output:
         "results/inserts/{insert_name}/reads_{i}.fastq.gz"
     shell:
-        "seqtk  subseq '{input.fastq}' {input.read_list} | bgzip>{output}"
+        "seqtk  subseq '{input.fastq}' <(cut -f1 {input.read_list}) | bgzip>{output}"
 
 rule read_segments:
     input:
         fastq = rules.get_insert_reads.output,
-        insert_paf = rules.insert_ava.output.insert_paf
+        insert_paf =  "results/inserts/{insert_name}/reads_insert_{i}.paf"
     output:
         "results/inserts/{insert_name}/segments_{i}.fasta.gz"
     params:
-        SLOP=1000
+        SLOP=2000
     script: "scripts/read_segments.py"
 
 rule consensus_insert_reads:
@@ -182,7 +182,8 @@ rule consensus_insert_reads:
     output:
         "results/inserts/{insert_name}/consensus_{i}.fasta.gz"
     shell:
-        "spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -24 -c -1 -r 2 {input} |bgzip> {output}"
+        "spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -4 -c -2 -r 2 {input} |bgzip> {output}"
+        #"spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -24 -c -1 -r 2 {input} |bgzip> {output}"
 
 def aggregate_input(wildcards):
     '''
@@ -194,7 +195,7 @@ def aggregate_input(wildcards):
     
     for insert_name in INSERT_NAMES:
         checkpoint_output = checkpoints.scatter_inserts.get(insert_name=insert_name,**wildcards).output[0]
-        wc_glob = glob_wildcards('results/{insert_name}/insert_{i}.lst')
+        wc_glob = glob_wildcards('results/{insert_name}/reads_insert_{i}.paf')
     
         all_inserts.extend( expand(os.path.join(checkpoint_output,'consensus_{i}.fasta.gz'),
            i=wc_glob.i,insert_name=insert_name))
