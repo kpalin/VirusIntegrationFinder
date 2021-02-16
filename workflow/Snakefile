@@ -12,7 +12,8 @@ include: "rules/common.smk"
 
 rule all:
     input:
-        "results/insert_consensi.merged.bed"
+        "results/insert_consensi.merged.bed",
+        "results/insert_consensi.insert.bed"
 
 rule all_old:
     input:
@@ -137,19 +138,6 @@ rule unmapped_reads:
         "samtools view -h -f 0x4 {input}|samtools fasta |bgzip>{output}"
 
 
-# checkpoint scatter_inserts:
-#     input:
-#         bed=rules.mapped_inserts.output,
-#         bam=rules.genome_map.output.bam
-#     output:
-#         cluster_dir=directory("results/inserts/{insert_name}/")    
-#     shell:
-#         "mkdir -p {output.cluster_dir};"
-#         "while read CHROM START STOP ; do "
-#         "samtools view  {input.bam} ${{CHROM}}:${{START}}-${{STOP}}|"
-#         "cut -f1|sort -u >{output.cluster_dir}/insert_${{CHROM}}_${{START}}_${{STOP}}.lst ;"
-#         "done<{input.bed}"
-
 checkpoint scatter_inserts:
     input: 
         ava_paf = rules.reads_ava_unchopped.output.ava_paf,
@@ -188,7 +176,6 @@ rule consensus_insert_reads:
     output:
         "results/inserts/{insert_name}/consensus_{i}.fasta.gz"
     shell:
-        #"spoa --strand-ambiguous -l 2 -m 2 -n -4 -g  -4 -e -2 -q -4 -c -2 -r 2 {input} |bgzip> {output}"
         "spoa --strand-ambiguous -l 1 -m 2 -n -4 -g  -4 -e -2 -q -24 -c -1 -r 2 {input} |bgzip> {output}"
 
 def aggregate_input(wildcards):
